@@ -68,7 +68,12 @@ class Iblock
         $activityDate =  \Dev\Site\Helpers\IBlock::getActivityDate($elementId, $action);
         
     
-        $sectionId =  \Dev\Site\Helpers\IBlock::getOrCreateLogSection($logIblockId, $iblockInfo['NAME'], $iblockInfo['CODE']);
+        $sectionId = \Dev\Site\Helpers\IBlock::getOrCreateLogSection(
+            $logIblockId,
+            $iblockId,
+            $iblockInfo['NAME'],
+            $elementId
+        );
         
         if ($sectionId === false) {
             return true;

@@ -125,7 +125,7 @@ public static function getOrCreateLogIblock()
         $sectionId = $sectionIds[0];
         
 
-        $path = getSectionPathRecursive($sectionId);
+        $path = self::getSectionPath($sectionId);
         
         return $path ?: 'Корень';
     }
@@ -133,7 +133,7 @@ public static function getOrCreateLogIblock()
     /**
      * Рекурсивный сбор пути раздела
      */
-    public static function getSectionPathRecursive($sectionId, $depth = 0)
+    public static function getSectionPath($sectionId, $depth = 0)
     {
         if ($depth > 50) return '';
         
@@ -145,7 +145,7 @@ public static function getOrCreateLogIblock()
         $sectionName = $section['NAME'];
         
         if ($section['IBLOCK_SECTION_ID'] > 0) {
-            $parentPath = getSectionPathRecursive($section['IBLOCK_SECTION_ID'], $depth + 1);
+            $parentPath = self::getSectionPath((int)$section['IBLOCK_SECTION_ID'], $depth + 1);
             return $parentPath . ' -> ' . $sectionName;
         }
         
@@ -180,14 +180,17 @@ public static function getOrCreateLogIblock()
     /**
      * Получает или создает раздел в лог-инфоблоке
      */
-    public static function getOrCreateLogSection($logIblockId, $iblockName, $iblockCode)
+    public static function getOrCreateLogSection($logIblockId, $sourceIblockId, $iblockName, $elementId)
     {
-        // Ищем раздел по коду
+        $sourceIblockId = (int)$sourceIblockId;
+        $sectionCode = 'iblock_' . $sourceIblockId;
+
+        // Корневой раздел для конкретного исходного инфоблока
         $dbSection = \CIBlockSection::GetList(
             [],
             [
                 'IBLOCK_ID' => $logIblockId,
-                'CODE' => $iblockCode,
+                'CODE' => $sectionCode,
                 'CHECK_PERMISSIONS' => 'N'
             ],
             false,
@@ -195,21 +198,81 @@ public static function getOrCreateLogIblock()
         );
         
         if ($section = $dbSection->Fetch()) {
-            return (int)$section['ID'];
+            $parentSectionId = (int)$section['ID'];
+        } else {
+            $bs = new \CIBlockSection;
+            $parentSectionId = (int)$bs->Add([
+                'IBLOCK_ID' => $logIblockId,
+                'NAME' => $iblockName,
+                'CODE' => $sectionCode,
+                'ACTIVE' => 'Y',
+            ]);
+            if ($parentSectionId <= 0) {
+                return false;
+            }
         }
-        
-        // Создаем новый раздел
-        $bs = new \CIBlockSection;
-        $arFields = [
-            'IBLOCK_ID' => $logIblockId,
-            'NAME' => $iblockName,
-            'CODE' => $iblockCode,
-            'ACTIVE' => 'Y',
-        ];
-        
-        $sectionId = $bs->Add($arFields);
-        
-        return $sectionId ?: false;
+
+        $dbElementSections = \CIBlockElement::GetElementGroups((int)$elementId, true, ['ID']);
+        $sourceSection = $dbElementSections->Fetch();
+        if (!$sourceSection || (int)$sourceSection['ID'] <= 0) {
+            return $parentSectionId;
+        }
+
+        $sourcePath = [];
+        $currentSectionId = (int)$sourceSection['ID'];
+        $depthGuard = 0;
+        while ($currentSectionId > 0 && $depthGuard < 100) {
+            $depthGuard++;
+            $srcSection = \CIBlockSection::GetByID($currentSectionId)->Fetch();
+            if (!$srcSection) {
+                break;
+            }
+
+            $sourcePath[] = [
+                'ID' => (int)$srcSection['ID'],
+                'NAME' => (string)$srcSection['NAME'],
+                'PARENT_ID' => (int)$srcSection['IBLOCK_SECTION_ID'],
+            ];
+            $currentSectionId = (int)$srcSection['IBLOCK_SECTION_ID'];
+        }
+        $sourcePath = array_reverse($sourcePath);
+
+        foreach ($sourcePath as $srcNode) {
+            $logSectionCode = 'srcsec_' . $srcNode['ID'];
+            $dbLogSection = \CIBlockSection::GetList(
+                [],
+                [
+                    'IBLOCK_ID' => $logIblockId,
+                    'IBLOCK_SECTION_ID' => $parentSectionId,
+                    'CODE' => $logSectionCode,
+                    'CHECK_PERMISSIONS' => 'N'
+                ],
+                false,
+                ['ID', 'NAME']
+            );
+
+            if ($logSection = $dbLogSection->Fetch()) {
+                $parentSectionId = (int)$logSection['ID'];
+                continue;
+            }
+
+            $bs = new \CIBlockSection;
+            $newId = (int)$bs->Add([
+                'IBLOCK_ID' => $logIblockId,
+                'IBLOCK_SECTION_ID' => $parentSectionId,
+                'NAME' => $srcNode['NAME'],
+                'CODE' => $logSectionCode,
+                'ACTIVE' => 'Y',
+            ]);
+
+            if ($newId <= 0) {
+                return false;
+            }
+
+            $parentSectionId = $newId;
+        }
+
+        return $parentSectionId;
     }
     
     /**
